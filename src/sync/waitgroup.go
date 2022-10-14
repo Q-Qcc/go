@@ -18,6 +18,7 @@ import (
 //
 // A WaitGroup must not be copied after first use.
 type WaitGroup struct {
+	// 表示不能对该struct复制
 	noCopy noCopy
 
 	// 64-bit value: high 32 bits are counter, low 32 bits are waiter count.
@@ -33,6 +34,7 @@ type WaitGroup struct {
 // state returns pointers to the state and sema fields stored within wg.state*.
 func (wg *WaitGroup) state() (statep *uint64, semap *uint32) {
 	if unsafe.Alignof(wg.state1) == 8 || uintptr(unsafe.Pointer(&wg.state1))%8 == 0 {
+		// 分配的地址是64位对齐
 		// state1 is 64-bit aligned: nothing to do.
 		return &wg.state1, &wg.state2
 	} else {
@@ -57,6 +59,7 @@ func (wg *WaitGroup) state() (statep *uint64, semap *uint32) {
 // new Add calls must happen after all previous Wait calls have returned.
 // See the WaitGroup example.
 func (wg *WaitGroup) Add(delta int) {
+	// 获取counter waiter和sema
 	statep, semap := wg.state()
 	if race.Enabled {
 		_ = *statep // trigger nil deref early
@@ -67,9 +70,10 @@ func (wg *WaitGroup) Add(delta int) {
 		race.Disable()
 		defer race.Enable()
 	}
+	// counter加1
 	state := atomic.AddUint64(statep, uint64(delta)<<32)
-	v := int32(state >> 32)
-	w := uint32(state)
+	v := int32(state >> 32) // counter
+	w := uint32(state)      // waiter
 	if race.Enabled && delta > 0 && v == int32(delta) {
 		// The first increment must be synchronized with Wait.
 		// Need to model this as a read, because there can be
@@ -79,12 +83,16 @@ func (wg *WaitGroup) Add(delta int) {
 	if v < 0 {
 		panic("sync: negative WaitGroup counter")
 	}
+	// 已经wait()了，不再允许Add()，v == int32(delta)表示counter本来是0，表明需要释放wait，不允许再add了
 	if w != 0 && delta > 0 && v == int32(delta) {
 		panic("sync: WaitGroup misuse: Add called concurrently with Wait")
 	}
+	// counter为正说明不需要释放信号量，直接退出
+	// waiter为0，也说明没有等待者，也不需要释放信号量，直接退出
 	if v > 0 || w == 0 {
 		return
 	}
+	// counter等于0，可以释放所有等待者了
 	// This goroutine has set counter to 0 when waiters > 0.
 	// Now there can't be concurrent mutations of state:
 	// - Adds must not happen concurrently with Wait,
@@ -133,6 +141,7 @@ func (wg *WaitGroup) Wait() {
 				// otherwise concurrent Waits will race with each other.
 				race.Write(unsafe.Pointer(semap))
 			}
+			// 挂起当前goroutine
 			runtime_Semacquire(semap)
 			if *statep != 0 {
 				panic("sync: WaitGroup is reused before previous Wait has returned")
